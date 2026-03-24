@@ -170,9 +170,14 @@ const categoryLabels = {
   warning: "Warning",
 };
 
+// ---------------------------------------------------------------------------
+// Audio Engine
+// ---------------------------------------------------------------------------
+
 class RockyAudioEngine {
   constructor() {
     this.ctx = null;
+    this.reverbNode = null;
     this.currentNodes = [];
     this.currentTimeout = null;
     this.onPlaybackEnd = null;
@@ -183,31 +188,28 @@ class RockyAudioEngine {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       this.ctx = new AudioContextClass();
     }
-
     if (this.ctx.state === "suspended") {
       await this.ctx.resume();
+    }
+    if (!this.reverbNode) {
+      this.reverbNode = this.#createReverb();
+      this.reverbNode.connect(this.ctx.destination);
     }
   }
 
   stopCurrent(notify = true) {
+    // Cancel any ongoing speech synthesis.
+    window.speechSynthesis?.cancel();
+
     if (this.currentTimeout) {
       window.clearTimeout(this.currentTimeout);
       this.currentTimeout = null;
     }
 
     for (const node of this.currentNodes) {
-      try {
-        node.stop?.(0);
-      } catch {
-        // Nodes may already be stopped.
-      }
-      try {
-        node.disconnect?.();
-      } catch {
-        // Safe disconnect.
-      }
+      try { node.stop?.(0); } catch { /* already stopped */ }
+      try { node.disconnect?.(); } catch { /* safe */ }
     }
-
     this.currentNodes = [];
 
     if (notify && typeof this.onPlaybackEnd === "function") {
@@ -216,26 +218,107 @@ class RockyAudioEngine {
   }
 
   async playLine(line, mode) {
-    await this.ensureReady();
     this.stopCurrent(false);
 
-    const now = this.ctx.currentTime + 0.02;
-    const duration = (line.durationMs ?? 2400) / 1000;
-
-    const master = this.ctx.createGain();
-    master.gain.setValueAtTime(0.0001, now);
-    master.gain.exponentialRampToValueAtTime(0.85, now + 0.08);
-    master.gain.exponentialRampToValueAtTime(0.0001, now + duration);
-    master.connect(this.ctx.destination);
-
-    this.currentNodes.push(master);
-
     if (mode === "alien") {
-      this.#playAlien(line, now, duration, master);
+      await this.ensureReady();
+      this.#playAlien(line);
     } else {
-      this.#playHuman(line, now, duration, master);
+      this.#playHumanSpeech(line);
     }
+  }
 
+  // ---- Reverb (programmatic impulse response) ----------------------------
+
+  #createReverb() {
+    const sr = this.ctx.sampleRate;
+    const length = Math.floor(sr * 1.8);
+    const impulse = this.ctx.createBuffer(2, length, sr);
+    for (let ch = 0; ch < 2; ch++) {
+      const data = impulse.getChannelData(ch);
+      for (let i = 0; i < length; i++) {
+        const t = i / length;
+        // Exponential decay with a gentle early reflection spike.
+        data[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, 2.4) * 0.75;
+      }
+    }
+    const conv = this.ctx.createConvolver();
+    conv.buffer = impulse;
+    return conv;
+  }
+
+  // ---- Alien Rocky (chord-sequence synthesis) ----------------------------
+  //
+  // Rocky speaks in simultaneous musical tones (chords), not a human voice.
+  // Each preset defines a sequence of chord shapes expressed as frequency
+  // ratios relative to a base pitch, and the timing of each chord within
+  // the phrase (0–1 fraction of total duration).  Pure sine partials with a
+  // bell-like percussive envelope give the "resonant xylophone" quality
+  // described in the book.  A programmatic reverb adds space.
+
+  #playAlien(line) {
+    const now = this.ctx.currentTime + 0.02;
+    const totalDuration = (line.durationMs ?? 2400) / 1000;
+
+    // Presets: base frequency (Hz), chord shapes (ratio arrays), rhythm (0–1 offsets).
+    const presets = {
+      bright:   { base: 220, chords: [[1, 5/4, 3/2],       [3/2, 15/8, 3],    [1, 5/4, 2]],          rhythm: [0, 0.32, 0.65] },
+      spark:    { base: 260, chords: [[1, 9/8, 4/3],        [4/3, 5/3, 2],     [2, 5/2, 3]],           rhythm: [0, 0.27, 0.54] },
+      trill:    { base: 300, chords: [[1, 6/5, 3/2],        [6/5, 3/2, 9/5],   [1, 5/4, 9/5],  [3/2, 2, 5/2]], rhythm: [0, 0.20, 0.40, 0.62] },
+      ominous:  { base: 110, chords: [[1, 7/6, 3/2],        [7/6, 7/5, 2],     [1, 7/6, 7/4]],         rhythm: [0, 0.42, 0.74] },
+      bouncy:   { base: 280, chords: [[1, 5/4, 2],          [2, 5/2, 3],       [1, 3/2, 2]],           rhythm: [0, 0.28, 0.55] },
+      warm:     { base: 180, chords: [[1, 5/4, 3/2, 2],     [5/4, 3/2, 2, 5/2]],                       rhythm: [0, 0.48] },
+      harmonic: { base: 165, chords: [[1, 2, 3, 4],         [2, 3, 4, 5],      [3, 4, 5, 6]],          rhythm: [0, 0.35, 0.67] },
+      sharp:    { base: 240, chords: [[1, 4/3, 2],          [2, 8/3, 3]],                               rhythm: [0, 0.40] },
+      deep:     { base: 90,  chords: [[1, 3/2, 2, 3],       [3/2, 2, 3, 4]],                           rhythm: [0, 0.50] },
+      wobble:   { base: 200, chords: [[1, 16/15, 3/2],      [3/2, 2, 7/4],     [1, 5/4, 3/2]],         rhythm: [0, 0.30, 0.60] },
+      pulse:    { base: 160, chords: [[1, 5/4],             [1, 5/4],          [1, 5/4],   [1, 5/4, 3/2]], rhythm: [0, 0.22, 0.44, 0.67] },
+      sad:      { base: 175, chords: [[1, 6/5, 3/2],        [6/5, 3/2, 12/7],  [1, 6/5, 7/5]],         rhythm: [0, 0.38, 0.72] },
+    };
+
+    const preset = presets[line.alienAudioPreset] ?? presets.bright;
+    const { base, chords, rhythm } = preset;
+
+    // Dry/wet split: 55 % direct, 45 % through reverb.
+    const dryGain = this.ctx.createGain();
+    const wetGain = this.ctx.createGain();
+    dryGain.gain.value = 0.55;
+    wetGain.gain.value = 0.45;
+    dryGain.connect(this.ctx.destination);
+    wetGain.connect(this.reverbNode);
+    this.currentNodes.push(dryGain, wetGain);
+
+    chords.forEach((ratios, chordIdx) => {
+      const chordStart = now + rhythm[chordIdx] * totalDuration;
+      // Last chord decays a bit longer so the phrase rings out naturally.
+      const decayTime = chordIdx === chords.length - 1
+        ? Math.min(1.1, totalDuration * 0.45)
+        : Math.min(0.75, totalDuration * 0.30);
+
+      ratios.forEach((ratio) => {
+        const freq = base * ratio;
+        const osc = this.ctx.createOscillator();
+        const oscGain = this.ctx.createGain();
+
+        osc.type = "sine";
+        osc.frequency.value = freq;
+
+        // Bell envelope: very fast attack, smooth exponential decay.
+        const peak = 0.24 / ratios.length;
+        oscGain.gain.setValueAtTime(0.0001, chordStart);
+        oscGain.gain.linearRampToValueAtTime(peak, chordStart + 0.014);
+        oscGain.gain.exponentialRampToValueAtTime(0.0001, chordStart + decayTime);
+
+        osc.connect(oscGain);
+        oscGain.connect(dryGain);
+        oscGain.connect(wetGain);
+        osc.start(chordStart);
+        osc.stop(chordStart + decayTime + 0.06);
+        this.currentNodes.push(osc, oscGain);
+      });
+    });
+
+    // Notify when the phrase has finished.
     this.currentTimeout = window.setTimeout(() => {
       this.currentNodes = [];
       this.currentTimeout = null;
@@ -245,182 +328,78 @@ class RockyAudioEngine {
     }, line.durationMs ?? 2400);
   }
 
-  #createShapedOscillator(type, frequency, start, duration, output, volume = 0.18) {
-    const osc = this.ctx.createOscillator();
-    const gain = this.ctx.createGain();
-    osc.type = type;
-    osc.frequency.setValueAtTime(frequency, start);
-    gain.gain.setValueAtTime(0.0001, start);
-    gain.gain.exponentialRampToValueAtTime(volume, start + 0.04);
-    gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
-    osc.connect(gain);
-    gain.connect(output);
-    osc.start(start);
-    osc.stop(start + duration + 0.02);
-    this.currentNodes.push(osc, gain);
-    return { osc, gain };
-  }
+  // ---- Human Rocky (Web Speech API) -------------------------------------
+  //
+  // Actual spoken English via the browser's built-in speech synthesis.
+  // Pitch and rate are tuned per emotional preset.
 
-  #playAlien(line, start, duration, master) {
-    const presetOffsets = {
-      bright: [0, 7, 12],
-      spark: [0, 4, 11],
-      trill: [0, 3, 10],
-      ominous: [0, 5, 8],
-      bouncy: [0, 7, 14],
-      warm: [0, 5, 12],
-      harmonic: [0, 7, 9],
-      sharp: [0, 2, 10],
-      deep: [0, 7, 19],
-      wobble: [0, 6, 12],
-      pulse: [0, 5, 7],
-      sad: [0, 3, 7],
+  #playHumanSpeech(line) {
+    const speechParams = {
+      gentle:   { pitch: 1.1,  rate: 0.88 },
+      crisp:    { pitch: 1.0,  rate: 1.05 },
+      smile:    { pitch: 1.15, rate: 1.0  },
+      firm:     { pitch: 0.9,  rate: 1.0  },
+      dry:      { pitch: 0.95, rate: 1.0  },
+      steady:   { pitch: 0.95, rate: 0.92 },
+      measured: { pitch: 0.9,  rate: 0.88 },
+      command:  { pitch: 0.85, rate: 1.05 },
+      calm:     { pitch: 0.95, rate: 0.85 },
+      focused:  { pitch: 1.0,  rate: 1.0  },
+      wry:      { pitch: 1.05, rate: 0.93 },
+      urgent:   { pitch: 1.1,  rate: 1.22 },
+      playful:  { pitch: 1.2,  rate: 1.1  },
+      mournful: { pitch: 0.8,  rate: 0.72 },
     };
 
-    const intervals = presetOffsets[line.alienAudioPreset] ?? [0, 7, 12];
-    const baseFreq = 120 + line.baseText.length * 2.15;
-    const filter = this.ctx.createBiquadFilter();
-    filter.type = "bandpass";
-    filter.frequency.setValueAtTime(baseFreq * 3.2, start);
-    filter.Q.setValueAtTime(5.2, start);
-    filter.connect(master);
-    this.currentNodes.push(filter);
+    const params = speechParams[line.humanAudioPreset] ?? { pitch: 1.0, rate: 1.0 };
+    const utterance = new SpeechSynthesisUtterance(line.baseText);
+    utterance.pitch = params.pitch;
+    utterance.rate = params.rate;
+    utterance.volume = 1.0;
+    utterance.lang = "en-US";
 
-    const pulseRate = Math.max(3, Math.min(8, line.baseText.split(" ").length));
-    const pulse = this.ctx.createOscillator();
-    const pulseGain = this.ctx.createGain();
-    pulse.type = "triangle";
-    pulse.frequency.setValueAtTime(pulseRate, start);
-    pulseGain.gain.setValueAtTime(0.08, start);
-    pulse.connect(pulseGain);
-    pulseGain.connect(filter.frequency);
-    pulse.start(start);
-    pulse.stop(start + duration + 0.03);
-    this.currentNodes.push(pulse, pulseGain);
+    const handleEnd = () => {
+      if (typeof this.onPlaybackEnd === "function") this.onPlaybackEnd();
+    };
+    utterance.onend = handleEnd;
+    utterance.onerror = handleEnd;
 
-    intervals.forEach((offset, index) => {
-      const ratio = Math.pow(2, offset / 12);
-      const oscType = index === 1 ? "triangle" : "sine";
-      const { osc } = this.#createShapedOscillator(
-        oscType,
-        baseFreq * ratio,
-        start + index * 0.03,
-        duration - index * 0.04,
-        filter,
-        0.14 + index * 0.03
-      );
-
-      const vibrato = this.ctx.createOscillator();
-      const vibratoGain = this.ctx.createGain();
-      vibrato.type = "sine";
-      vibrato.frequency.setValueAtTime(4.5 + index, start);
-      vibratoGain.gain.setValueAtTime(6 + index * 2, start);
-      vibrato.connect(vibratoGain);
-      vibratoGain.connect(osc.frequency);
-      vibrato.start(start);
-      vibrato.stop(start + duration + 0.04);
-      this.currentNodes.push(vibrato, vibratoGain);
-    });
-  }
-
-  #playHuman(line, start, duration, master) {
-    const presetShapes = {
-      gentle: { base: 160, glide: 22, wobble: 2.6 },
-      crisp: { base: 185, glide: 18, wobble: 4.1 },
-      smile: { base: 200, glide: 26, wobble: 3.4 },
-      firm: { base: 148, glide: 10, wobble: 2.1 },
-      dry: { base: 172, glide: 14, wobble: 2.7 },
-      steady: { base: 154, glide: 12, wobble: 2.2 },
-      measured: { base: 165, glide: 8, wobble: 1.8 },
-      command: { base: 144, glide: 6, wobble: 1.5 },
-      calm: { base: 158, glide: 12, wobble: 1.9 },
-      focused: { base: 176, glide: 9, wobble: 2.5 },
-      wry: { base: 170, glide: 20, wobble: 2.3 },
-      urgent: { base: 188, glide: 30, wobble: 4.4 },
-      playful: { base: 198, glide: 34, wobble: 4.8 },
-      mournful: { base: 128, glide: -24, wobble: 1.2 },
+    const applyVoiceAndSpeak = () => {
+      const voices = window.speechSynthesis.getVoices();
+      // Prefer high-quality local voices in priority order.
+      const preferred =
+        voices.find(v => v.name === "Samantha") ??
+        voices.find(v => v.name === "Daniel") ??
+        voices.find(v => v.name.includes("Karen")) ??
+        voices.find(v => v.name.includes("Moira")) ??
+        voices.find(v => v.lang.startsWith("en") && v.localService) ??
+        voices.find(v => v.lang.startsWith("en")) ??
+        null;
+      if (preferred) utterance.voice = preferred;
+      window.speechSynthesis.speak(utterance);
     };
 
-    const profile = presetShapes[line.humanAudioPreset] ?? presetShapes.gentle;
-    const phraseLength = line.baseText.length;
-    const voice = this.ctx.createOscillator();
-    const voiceGain = this.ctx.createGain();
-    const filter = this.ctx.createBiquadFilter();
-    const formant = this.ctx.createBiquadFilter();
-    const lfo = this.ctx.createOscillator();
-    const lfoGain = this.ctx.createGain();
-
-    voice.type = "sawtooth";
-    voice.frequency.setValueAtTime(profile.base + phraseLength * 0.45, start);
-    voice.frequency.linearRampToValueAtTime(profile.base + profile.glide, start + duration * 0.35);
-    voice.frequency.linearRampToValueAtTime(profile.base - 12, start + duration);
-
-    filter.type = "lowpass";
-    filter.frequency.setValueAtTime(1400, start);
-    filter.Q.setValueAtTime(0.8, start);
-
-    formant.type = "bandpass";
-    formant.frequency.setValueAtTime(900 + phraseLength * 6, start);
-    formant.Q.setValueAtTime(2.4, start);
-
-    voiceGain.gain.setValueAtTime(0.0001, start);
-    voiceGain.gain.exponentialRampToValueAtTime(0.26, start + 0.06);
-    voiceGain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
-
-    lfo.type = "sine";
-    lfo.frequency.setValueAtTime(profile.wobble, start);
-    lfoGain.gain.setValueAtTime(22, start);
-
-    voice.connect(filter);
-    filter.connect(formant);
-    formant.connect(voiceGain);
-    voiceGain.connect(master);
-    lfo.connect(lfoGain);
-    lfoGain.connect(voice.frequency);
-
-    const consonantNoise = this.ctx.createBufferSource();
-    const noiseFilter = this.ctx.createBiquadFilter();
-    const noiseGain = this.ctx.createGain();
-    consonantNoise.buffer = this.#createNoiseBuffer();
-    noiseFilter.type = "highpass";
-    noiseFilter.frequency.setValueAtTime(1600, start);
-    noiseGain.gain.setValueAtTime(0.0001, start);
-    noiseGain.gain.linearRampToValueAtTime(0.02, start + 0.03);
-    noiseGain.gain.linearRampToValueAtTime(0.008, start + duration * 0.45);
-    noiseGain.gain.linearRampToValueAtTime(0.0001, start + duration);
-    consonantNoise.connect(noiseFilter);
-    noiseFilter.connect(noiseGain);
-    noiseGain.connect(master);
-
-    voice.start(start);
-    voice.stop(start + duration + 0.03);
-    lfo.start(start);
-    lfo.stop(start + duration + 0.03);
-    consonantNoise.start(start);
-    consonantNoise.stop(start + duration + 0.03);
-
-    this.currentNodes.push(
-      voice,
-      voiceGain,
-      filter,
-      formant,
-      lfo,
-      lfoGain,
-      consonantNoise,
-      noiseFilter,
-      noiseGain
-    );
-  }
-
-  #createNoiseBuffer() {
-    const buffer = this.ctx.createBuffer(1, this.ctx.sampleRate * 2, this.ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let index = 0; index < data.length; index += 1) {
-      data[index] = (Math.random() * 2 - 1) * 0.18;
+    // Voices may not be loaded yet on first call.
+    if (window.speechSynthesis.getVoices().length > 0) {
+      applyVoiceAndSpeak();
+    } else {
+      window.speechSynthesis.addEventListener("voiceschanged", function once() {
+        window.speechSynthesis.removeEventListener("voiceschanged", once);
+        applyVoiceAndSpeak();
+      });
+      // Safety fallback if the event never fires (some browsers).
+      setTimeout(() => {
+        if (!window.speechSynthesis.speaking && !window.speechSynthesis.pending) {
+          applyVoiceAndSpeak();
+        }
+      }, 350);
     }
-    return buffer;
   }
 }
+
+// ---------------------------------------------------------------------------
+// App glue
+// ---------------------------------------------------------------------------
 
 const audioEngine = new RockyAudioEngine();
 audioEngine.onPlaybackEnd = () => {
@@ -432,22 +411,23 @@ audioEngine.onPlaybackEnd = () => {
 
 async function playTile(lineId) {
   const line = voiceLines.find((item) => item.id === lineId);
-  if (!line) {
-    return;
-  }
+  if (!line) return;
 
-  await enableAudio();
-
-  // If audio still not ready after the unlock attempt, try one more time
-  // (the tile tap itself counts as a user gesture on mobile).
-  if (!state.audioReady) {
-    try {
-      await audioEngine.ensureReady();
-      state.audioReady = true;
-    } catch {
-      console.warn("Audio still unavailable on tile tap.");
-      return;
+  if (state.activeMode === "alien") {
+    // Alien mode needs the Web Audio API — ensure it's unlocked.
+    await enableAudio();
+    if (!state.audioReady) {
+      try {
+        await audioEngine.ensureReady();
+        state.audioReady = true;
+      } catch {
+        console.warn("Audio still unavailable on tile tap.");
+        return;
+      }
     }
+  } else {
+    // Human mode uses speechSynthesis — no AudioContext needed.
+    elements.audioUnlock.classList.add("is-hidden");
   }
 
   state.activeTileId = line.id;
@@ -516,20 +496,13 @@ function setMode(mode) {
 }
 
 async function enableAudio() {
-  // Always dismiss the overlay immediately so a failed init never freezes the UI.
+  // Always dismiss the overlay first so a failed init never freezes the UI.
   elements.audioUnlock.classList.add("is-hidden");
-
-  if (state.audioReady) {
-    return;
-  }
-
+  if (state.audioReady) return;
   try {
     await audioEngine.ensureReady();
     state.audioReady = true;
   } catch (error) {
-    // Audio init failed (common on file:// or restricted contexts).
-    // Mark as ready anyway so we retry inline on the next tile tap
-    // rather than showing the overlay again.
     console.warn("AudioContext init failed, will retry on tile tap:", error);
     state.audioReady = false;
   }
@@ -571,7 +544,6 @@ elements.unlockButton.addEventListener("click", async () => {
   await enableAudio();
 });
 
-// Also dismiss by clicking the dark backdrop (outside the panel).
 elements.audioUnlock.addEventListener("click", async (event) => {
   if (event.target === elements.audioUnlock) {
     await enableAudio();
@@ -582,11 +554,9 @@ document.addEventListener("keydown", async (event) => {
   if (event.key === "Escape") {
     audioEngine.stopCurrent();
   }
-
   if (event.key.toLowerCase() === "m") {
     setMode(state.activeMode === "alien" ? "human" : "alien");
   }
-
   if (event.key.toLowerCase() === "r" && state.activeTileId) {
     await playTile(state.activeTileId);
   }
