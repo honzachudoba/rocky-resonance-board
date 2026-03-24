@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rocky Resonance Board</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Syne:wght@500;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="hero">
+        <div class="hero__eyebrow">Project Hail Mary Inspired Soundboard</div>
+        <div class="hero__copy">
+          <h1>Rocky Resonance Board</h1>
+          <p>
+            Tap a tile to hear two original interpretations of Rocky-inspired speech:
+            musical alien resonance and a more human-translated voice.
+          </p>
+        </div>
+        <div class="mode-panel" aria-label="Voice mode controls">
+          <div class="mode-toggle" role="tablist" aria-label="Voice mode">
+            <button class="mode-toggle__button is-active" data-mode="alien" role="tab" aria-selected="true">
+              Alien Rocky
+            </button>
+            <button class="mode-toggle__button" data-mode="human" role="tab" aria-selected="false">
+              Human Rocky
+            </button>
+          </div>
+          <button class="stop-button" id="stopButton" type="button">Stop playback</button>
+        </div>
+      </header>
+
+      <main>
+        <section class="status-bar" aria-live="polite">
+          <div>
+            <span class="status-bar__label">Now playing</span>
+            <strong id="nowPlaying">Nothing yet</strong>
+          </div>
+          <div>
+            <span class="status-bar__label">Mode</span>
+            <strong id="modeLabel">Alien Rocky</strong>
+          </div>
+          <div>
+            <span class="status-bar__label">Filter</span>
+            <strong id="filterLabel">All categories</strong>
+          </div>
+        </section>
+
+        <section class="library">
+          <div class="library__heading">
+            <h2>Starter Tiles</h2>
+            <p>Short paraphrased labels only. Audio is synthesized in your browser.</p>
+          </div>
+          <div class="library-controls">
+            <div class="filter-chips" id="filterChips" aria-label="Category filters"></div>
+            <label class="search-field">
+              <span class="search-field__label">Search tiles</span>
+              <input id="searchInput" type="search" placeholder="Find a phrase or category" />
+            </label>
+          </div>
+          <div class="empty-state" id="emptyState" hidden>
+            <strong>No tiles match that search.</strong>
+            <span>Try a different word or switch back to all categories.</span>
+          </div>
+          <div class="tile-grid" id="tileGrid"></div>
+        </section>
+      </main>
+    </div>
+
+    <div class="audio-unlock" id="audioUnlock" role="dialog" aria-modal="false">
+      <div class="audio-unlock__panel">
+        <span class="audio-unlock__eyebrow">Audio warmup</span>
+        <h2>Tap once to wake Rocky up</h2>
+        <p>Your browser needs one interaction before synthesized sound can play, especially on mobile.</p>
+        <button class="audio-unlock__button" id="unlockButton" type="button">Enable sound</button>
+      </div>
+    </div>
+
+    <template id="tileTemplate">
+      <button class="voice-tile" type="button">
+        <span class="voice-tile__category"></span>
+        <strong class="voice-tile__label"></strong>
+        <span class="voice-tile__wave" aria-hidden="true">
+          <span></span><span></span><span></span><span></span>
+        </span>
+        <span class="voice-tile__hint">Tap to play</span>
+      </button>
+    </template>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
